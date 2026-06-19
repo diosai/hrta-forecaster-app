@@ -133,6 +133,12 @@ def load_and_sync_data(csv_path="data/gold_price_history.csv", period="2y"):
     if os.path.exists(csv_path):
         print(f"Loading existing database from {csv_path}...")
         db_df = pd.read_csv(csv_path)
+        
+        if 'Date' not in db_df.columns:
+            if 'index' in db_df.columns:
+                db_df.rename(columns={'index': 'Date'}, inplace=True)
+        print("Columns:", db_df.columns.tolist())
+        
         db_df['Date'] = pd.to_datetime(db_df['Date']).dt.date
         db_df.set_index('Date', inplace=True)
         
@@ -211,12 +217,16 @@ def load_and_sync_data(csv_path="data/gold_price_history.csv", period="2y"):
 
     db_df = db_df.sort_index()
     db_df = db_df.ffill().bfill()
-    
-    # 2. Perbaikan pada reset_index tanpa argumen 'names' untuk menjamin kompatibilitas lintas versi Pandas
+
+    # Beri nama index sebelum reset
+    db_df.index.name = "Date"
+
     db_df.reset_index(inplace=True)
+
     db_df.to_csv(csv_path, index=False)
+
     print(f"Database successfully synchronized and saved to {csv_path}.")
-    
+
     return db_df
 
 if __name__ == "__main__":
