@@ -13,8 +13,6 @@ class HRTAGoldScraper:
     from the official HRTA Gold price page.
     """
     URL = "https://hrtagold.id/id/gold-price"
-    
-    # 1. Update Headers untuk menyamarkan request dan melewati blokir Cloudflare/WAF 403
     HEADERS = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
@@ -25,20 +23,12 @@ class HRTAGoldScraper:
     def scrape_live_price(cls):
         """
         Scrapes live retail gold prices.
-        Returns:
-            dict: {
-                "buy_price": int or None,
-                "sell_price": int or None,
-                "date": str (YYYY-MM-DD),
-                "raw_description": str
-            }
         """
         try:
             response = requests.get(cls.URL, headers=cls.HEADERS, timeout=15)
             response.raise_for_status()
             html = response.text
         except requests.exceptions.HTTPError as http_err:
-            # Menangkap error 403 khusus Cloudflare/WAF
             print(f"HTTP Error terdeteksi di server: {http_err}")
             return cls._fallback_response()
         except Exception as e:
@@ -47,16 +37,13 @@ class HRTAGoldScraper:
 
         soup = BeautifulSoup(html, "html.parser")
         
-        # Parse from Meta Tags
         buy_price = None
         sell_price = None
         
-        # 1. Try price.amount for buy price
         price_meta = soup.find("meta", {"name": "price.amount"})
         if price_meta:
             buy_price = cls._parse_numeric(price_meta.get("content", ""))
 
-        # 2. Try description tags for both prices
         desc_meta = soup.find("meta", {"name": "description"})
         og_desc_meta = soup.find("meta", {"property": "og:description"})
         
@@ -69,17 +56,14 @@ class HRTAGoldScraper:
         for desc in descriptions:
             if not desc:
                 continue
-            # Regex to find Beli (Buy) price
             buy_match = re.search(r'(?:Beli:?\s*Rp\s*)([\d\.]+)', desc, re.IGNORECASE)
             if buy_match and not buy_price:
                 buy_price = cls._parse_numeric(buy_match.group(1))
             
-            # Regex to find Jual (Sell/Buyback) price
             sell_match = re.search(r'(?:Jual:?\s*Rp\s*)([\d\.]+)', desc, re.IGNORECASE)
             if sell_match:
                 sell_price = cls._parse_numeric(sell_match.group(1))
 
-        # Date of update
         today_str = datetime.date.today().strftime("%Y-%m-%d")
         
         return {
@@ -91,13 +75,11 @@ class HRTAGoldScraper:
 
     @staticmethod
     def _parse_numeric(text):
-        """Helper to extract numeric digits from price strings"""
         digits = re.sub(r'[^\d]', '', text)
         return int(digits) if digits else None
 
     @classmethod
     def _fallback_response(cls):
-        """Returns a structure indicating failure"""
         return {
             "buy_price": None,
             "sell_price": None,
@@ -108,12 +90,10 @@ class HRTAGoldScraper:
 
 def fetch_spot_data(period="2y"):
     """
-    Downloads historical spot gold price (GC=F) and USD/IDR exchange rate (IDR=X) from yfinance,
-    aligns their timelines, and calculates the Spot price in IDR per gram.
+    Downloads historical spot gold price (GC=F) and USD/IDR exchange rate (IDR=X) from yfinance.
     """
     print(f"Fetching historical spot data (tickers: GC=F, IDR=X) for period: {period}...")
     
-    # Fetch data
     gold = yf.Ticker("GC=F")
     fx = yf.Ticker("IDR=X")
     
@@ -123,21 +103,14 @@ def fetch_spot_data(period="2y"):
     if gold_df.empty or fx_df.empty:
         raise ValueError("Failed to retrieve spot data from yfinance. Please check network connection.")
     
-    # Keep only Close prices
     gold_close = gold_df[['Close']].rename(columns={'Close': 'Gold_USD_Oz'})
     fx_close = fx_df[['Close']].rename(columns={'Close': 'USD_IDR'})
     
-    # Merge on Date index
     df = pd.merge(gold_close, fx_close, left_index=True, right_index=True, how='outer')
-    
-    # Sort index and forward fill gaps (holidays/weekend mismatch)
     df = df.sort_index()
     df = df.ffill().bfill()
     
-    # Constants
     TROY_OZ_TO_GRAM = 31.1034768
-    
-    # Calculate IDR Spot Price per Gram
     df['Spot_USD_Gram'] = df['Gold_USD_Oz'] / TROY_OZ_TO_GRAM
     df['Spot_IDR_Gram'] = df['Spot_USD_Gram'] * df['USD_IDR']
     
@@ -151,24 +124,19 @@ def load_and_sync_data(csv_path="data/gold_price_history.csv", period="2y"):
     """
     os.makedirs(os.path.dirname(csv_path), exist_ok=True)
     
-    # 1. Fetch yfinance spot data
     spot_df = fetch_spot_data(period=period)
-    
-    # 2. Scrape live retail prices
     live_info = HRTAGoldScraper.scrape_live_price()
     
-    # Normalize Spot index to date strings or datetime.date
     spot_df.index = spot_df.index.date
     spot_df = spot_df[~spot_df.index.duplicated(keep='last')]
     
-    # 3. Handle CSV caching
     if os.path.exists(csv_path):
         print(f"Loading existing database from {csv_path}...")
         db_df = pd.read_csv(csv_path)
         db_df['Date'] = pd.to_datetime(db_df['Date']).dt.date
         db_df.set_index('Date', inplace=True)
         
-        # Merge spot data updates
+        # Sinkronisasi data lama & pengisian baris baru secara aman tanpa memakai dictionary assignment
         for idx in spot_df.index:
             if idx in db_df.index:
                 db_df.loc[idx, 'Gold_USD_Oz'] = spot_df.loc[idx, 'Gold_USD_Oz']
@@ -176,19 +144,16 @@ def load_and_sync_data(csv_path="data/gold_price_history.csv", period="2y"):
                 db_df.loc[idx, 'Spot_USD_Gram'] = spot_df.loc[idx, 'Spot_USD_Gram']
                 db_df.loc[idx, 'Spot_IDR_Gram'] = spot_df.loc[idx, 'Spot_IDR_Gram']
             else:
-                # New spot data row, simulate physical prices
                 spot_idr = spot_df.loc[idx, 'Spot_IDR_Gram']
                 sim_retail = spot_idr * 1.0499
                 sim_buyback = sim_retail * 0.952
                 
-                db_df.loc[idx] = {
-                    'Gold_USD_Oz': spot_df.loc[idx, 'Gold_USD_Oz'],
-                    'USD_IDR': spot_df.loc[idx, 'USD_IDR'],
-                    'Spot_USD_Gram': spot_df.loc[idx, 'Spot_USD_Gram'],
-                    'Spot_IDR_Gram': spot_idr,
-                    'Retail_Price': sim_retail,
-                    'Buyback_Price': sim_buyback
-                }
+                db_df.loc[idx, 'Gold_USD_Oz'] = spot_df.loc[idx, 'Gold_USD_Oz']
+                db_df.loc[idx, 'USD_IDR'] = spot_df.loc[idx, 'USD_IDR']
+                db_df.loc[idx, 'Spot_USD_Gram'] = spot_df.loc[idx, 'Spot_USD_Gram']
+                db_df.loc[idx, 'Spot_IDR_Gram'] = spot_idr
+                db_df.loc[idx, 'Retail_Price'] = sim_retail
+                db_df.loc[idx, 'Buyback_Price'] = sim_buyback
     else:
         print(f"Initializing new database at {csv_path} with simulated historical retail prices...")
         db_df = pd.DataFrame(index=spot_df.index)
@@ -208,7 +173,6 @@ def load_and_sync_data(csv_path="data/gold_price_history.csv", period="2y"):
         db_df['Retail_Price'] = np.round(db_df['Retail_Price'], -3)
         db_df['Buyback_Price'] = np.round(db_df['Buyback_Price'], -3)
 
-    # 4. Sync live scraped data & Terapkan Fallback jika gagal
     today_date = datetime.date.today()
     
     if live_info["success"]:
@@ -217,27 +181,22 @@ def load_and_sync_data(csv_path="data/gold_price_history.csv", period="2y"):
         db_df.loc[today_date, 'Buyback_Price'] = live_info['sell_price']
     else:
         print(f"Scraper gagal mendapatkan data HRTA untuk hari ini ({today_date}). Menggunakan mekanisme fallback margin statis (+4.99%).")
-        # Pastikan tanggal hari ini terdaftar di index
         if today_date not in db_df.index:
             db_df.loc[today_date] = np.nan
             
-        # Dapatkan nilai spot hari ini (atau hari terakhir jika akhir pekan)
         if today_date in spot_df.index:
             spot_idr = spot_df.loc[today_date, 'Spot_IDR_Gram']
         else:
             last_idx = spot_df.index[-1]
             spot_idr = spot_df.loc[last_idx, 'Spot_IDR_Gram']
             
-        # Hitung estimasi harga jika scraper gagal
         sim_retail = spot_idr * 1.0499
         sim_buyback = sim_retail * 0.952
         
-        # Isi data estimasi hanya jika belum ada harga valid sebelumnya
         if pd.isna(db_df.loc[today_date, 'Retail_Price']):
             db_df.loc[today_date, 'Retail_Price'] = sim_retail
             db_df.loc[today_date, 'Buyback_Price'] = sim_buyback
 
-    # Pastikan data spot sinkron untuk baris hari ini
     if today_date in spot_df.index:
         db_df.loc[today_date, 'Gold_USD_Oz'] = spot_df.loc[today_date, 'Gold_USD_Oz']
         db_df.loc[today_date, 'USD_IDR'] = spot_df.loc[today_date, 'USD_IDR']
@@ -250,13 +209,11 @@ def load_and_sync_data(csv_path="data/gold_price_history.csv", period="2y"):
         db_df.loc[today_date, 'Spot_USD_Gram'] = spot_df.loc[last_idx, 'Spot_USD_Gram']
         db_df.loc[today_date, 'Spot_IDR_Gram'] = spot_df.loc[last_idx, 'Spot_IDR_Gram']
 
-    # Sort data by Date index
     db_df = db_df.sort_index()
-    # Forward fill spot components if there are gaps on weekends/holidays where retail has data
     db_df = db_df.ffill().bfill()
     
-    # Save back to CSV
-    db_df.reset_index(names='Date', inplace=True)
+    # 2. Perbaikan pada reset_index tanpa argumen 'names' untuk menjamin kompatibilitas lintas versi Pandas
+    db_df.reset_index(inplace=True)
     db_df.to_csv(csv_path, index=False)
     print(f"Database successfully synchronized and saved to {csv_path}.")
     
